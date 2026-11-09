@@ -1,8 +1,8 @@
 import { Call } from "./media.js";
+import { viewMarkup } from "./views.js";
 
 const main = document.querySelector("#main");
 const live = document.querySelector("#announcement");
-const brand = '<div class="brand"><span>Vision</span>Wear</div>';
 const video = document.createElement("video");
 video.autoplay = video.playsInline = video.muted = true;
 video.setAttribute("aria-label", "Live video from the vest");
@@ -19,14 +19,9 @@ let socket, reconnect, heartbeat, lastReply, call, pending, retry, streamWithVid
 let signaling = Promise.resolve();
 let previousView;
 
-const esc = value => String(value ?? "").replace(/[&<>"']/g, char => (
-  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
-));
-const badge = (label, tone = "") => `<span class="pill ${tone}">${esc(label)}</span>`;
 const helper = () => model.identity?.role === "helper";
 const inCall = () => model.request && model.request.state !== "waiting";
 const announce = message => { live.textContent = message; };
-const notices = () => model.notice ? `<p class="toast" role="alert">${esc(model.notice)}</p>` : "";
 
 const outcomes = {
   cancelled: ["Request cancelled", "The wearer cancelled the request."],
@@ -205,139 +200,33 @@ function newRequest() {
   render();
 }
 
-function showLogin() {
-  main.innerHTML = `<div class="login"><header>${brand}</header><div class="center">
-    <form id="login">
-      <p class="kicker">Volunteer assistance</p><h1 tabindex="-1">Welcome, Helper</h1>
-      <p class="muted">Sign in with your assigned VisionWear account.</p>
-      <label>Email<input name="email" type="email" autocomplete="username" required maxlength="120"></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
-      <p class="error" id="login-error" role="alert">${esc(model.notice)}</p>
-      <button class="primary" type="submit">Sign in</button>
-    </form></div></div>`;
-}
-
-function topbar(title, subtitle) {
-  const status = !model.online ? badge("Offline", "bad") : inCall() ? badge("In session", "good")
-    : helper() ? badge(model.available ? "Available" : "Unavailable", model.available ? "good" : "bad")
-      : badge("Device connected", "good");
-  return `<header class="topbar"><div><p class="kicker">VisionWear assistance</p>
-    <h1 tabindex="-1">${esc(title)}</h1><p class="muted">${esc(subtitle)}</p></div>
-    <div class="actions">${status}<span>${esc(model.identity.label)}</span><button data-action="logout">Sign out</button></div></header>`;
-}
-
-function dashboard() {
-  const available = model.online && model.available;
-  const message = !model.online ? "Connecting to the service…" : available
-    ? "You are available to receive help requests" : "You are currently unavailable";
-  const requests = model.waiting.map(request => `
-    <article class="request"><div class="identity"><span class="avatar" aria-hidden="true">VW</span><div>
-    <h3>${esc(request.vest_label)}</h3><small>Received <span data-elapsed="${request.created}" data-age></span></small></div></div>
-    <div class="actions">${badge("Vest connected", "good")}
-    <button class="primary" data-action="accept" data-id="${esc(request.id)}">Accept request<span class="sr-only"> from ${esc(request.vest_label)}</span></button></div></article>`).join("");
-  return topbar("Helper dashboard", "Assist VisionWear users in real time.") +
-    notices() + `<div class="banner ${available ? "" : "bad"}"><strong>${message}</strong>
-    <p>${available ? "When a wearer requests assistance, it will appear here." : "Set your status to Available when you’re ready to assist."}</p>
-    <div><button data-action="availability" ${model.online ? "" : "disabled"}>${available ? "Set unavailable" : "Set available"}</button></div></div>
-    <div class="section-head"><h2>Incoming help requests</h2>${badge(model.waiting.length)}</div>
-    ${requests || `<p class="panel empty">${available ? "Waiting for help requests." : "No requests while unavailable."}</p>`}`;
-}
-
-function device() {
-  const request = model.request;
-  const label = request ? "Request delivered. Waiting for a volunteer." : pending
-    ? "Sending request. Waiting for acknowledgment…" : "Ready for a test request.";
-  return topbar("Vest test console", "Device-side browser endpoint and sensor simulator.") + notices() +
-    `<div class="device-grid"><section class="panel device-panel">
-    <h2>Help button</h2><p>${label}</p>
-    <label>Call scenario<select id="scenario" ${request || pending ? "disabled" : ""}>
-      ${[["normal","Camera and two-way audio"],["missing-video","Camera unavailable"],["missing-audio","Microphone unavailable"]].map(([value, label]) =>
-        `<option value="${value}" ${model.scenario === value ? "selected" : ""}>${label}</option>`).join("")}
-    </select></label>
-    <div class="actions"><button class="primary" data-action="request" ${!model.online || request || pending ? "disabled" : ""}>Press help button</button>
-    ${request || pending ? '<button data-action="cancel">Cancel request</button>' : ""}
-    ${request ? '<button data-action="retry">Replay request ID</button>' : ""}
-    </div></section>
-    <section class="panel device-panel"><h2>Simulated sensor readings</h2>
-    <p class="muted">Diagnostics show the intended warning state. Physical vibration is verified on the vest.</p>
-    <form id="sensor">
-    <label>Sensor<select name="sensor"><option>Front</option><option>Left</option><option>Right</option></select></label>
-    <label>Distance in cm<input name="distance" type="number" step="any" placeholder="Leave blank for UNKNOWN"></label>
-    <button type="submit">Send sample</button></form>
-    <ul id="readings"></ul></section></div>
-    <button data-action="disconnect" ${model.online ? "" : "disabled"}>Simulate disconnect</button>`;
-}
-
-function session() {
-  const request = model.request;
-  const ready = request.state === "active" || request.state === "audio_only";
-  const hasVideo = helper() && request.state === "active";
-  const hasMic = !!call?.local.getAudioTracks().length;
-  const details = (key, value) => `<div><dt>${key}</dt><dd>${esc(value)}</dd></div>`;
-  const phase = request.state === "connecting" ? "Establishing audio and video connection…" :
-    request.state === "audio_only" ? "Video unavailable. You can continue speaking." : "Session in progress";
-  return topbar(`User ${request.vest_label}`, phase) + notices() +
-    `<div class="media-layout"><div><section class="stage" aria-label="Call media">
-    ${hasVideo ? '<div id="video-mount"></div><span class="pill live">● Live</span>' :
-    `<div class="stage-message"><h2>${!ready ? "Connecting…" :
-      helper() ? "Video unavailable" : "Connected to volunteer"}</h2>
-    <p>${!ready ? "Waiting for both audio directions." :
-      helper() ? "Two-way audio is still active." : "Use the microphone to speak with your helper."}</p></div>`}
-    </section><div class="controls">
-    <button data-action="mute" aria-pressed="${model.muted}" ${hasMic ? "" : "disabled"}>${model.muted ? "Unmute microphone" : "Mute microphone"}</button>
-    <button data-action="play">Play call audio</button>
-    <button class="danger" data-action="end">End session</button></div>
-    ${!helper() ? '<button data-action="disconnect">Simulate disconnect</button>' : ""}
-    </div><aside><section class="panel"><h2>Connection status</h2>
-    <dl class="readout">${details("Camera", request.state === "active" ? "Online" : request.state === "audio_only" ? "Unavailable" : "Checking")}
-    ${details(helper() ? "Audio from wearer" : "Audio from volunteer", call?.status.audio ? "Receiving" : "Waiting")}
-    ${details(helper() ? "Audio to wearer" : "Audio to volunteer", ready ? (model.muted ? "Muted" : "Connected") : "Checking")}
-    ${details("Your microphone", model.muted ? "Muted" : hasMic ? "On" : "Waiting")}
-    </dl>${call?.permissionError ? `<p class="error" role="alert">${esc(call.permissionError)}</p>` : ""}</section>
-    <section class="panel"><h2>Session information</h2><dl class="readout">
-    ${details("User ID", request.vest_label)}
-    <div><dt>Duration</dt><dd data-elapsed="${request.accepted}"></dd></div>
-    ${details("Request time", new Date(request.created * 1000).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" }))}
-    </dl></section></aside></div>`;
-}
-
-function settings() {
-  return topbar("Settings", "Set up your microphone before accepting a call.") +
-    notices() + `<section class="panel settings"><h2>Audio input</h2>
-    <p>Check microphone access and choose a device for the next session.</p>
-    <label>Microphone<select id="mic"><option value="">System default</option>
-    ${model.microphones.map((device, index) => `<option value="${esc(device.deviceId)}"
-      ${device.deviceId === model.mic ? "selected" : ""}>${esc(device.label || `Microphone ${index + 1}`)}</option>`).join("")}
-    </select></label><button data-action="check-mic">Check microphone</button>
-    </section>`;
-}
-
-function result() {
-  const [title, subtitle] = outcomes[model.result] || outcomes.server_restarted;
-  return `<section class="panel result"><p class="kicker">VisionWear assistance</p>
-    <h1 tabindex="-1">${title}</h1><p>${subtitle}</p>
-    <button class="primary" data-action="dashboard">Return to dashboard</button></section>`;
-}
-
 function render() {
   const focused = document.activeElement;
-  const focusKey = focused?.dataset.action;
-  const focusId = focused?.dataset.id;
   const view = !model.identity ? "login" : model.result ? "result" :
     inCall() ? "session" : model.page === "settings" ? "settings" : helper() ? "dashboard" : "device";
-  if (view === "login") {
-    if (previousView !== view) showLogin();
-  } else {
-    const isDashboard = ["dashboard", "device", "result"].includes(view);
-    main.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<nav aria-label="Main navigation">
-      <button data-action="dashboard" ${isDashboard ? 'aria-current="page"' : ""} ${view === "session" ? "disabled" : ""}>Dashboard</button>
-      ${view === "session" ? '<button aria-current="page">Active session</button>' : ""}
-      <button data-action="settings" ${view === "settings" ? 'aria-current="page"' : ""} ${inCall() ? "disabled" : ""}>Settings</button>
-      </nav></aside><div class="content">${({ dashboard, device, session, settings, result }[view])()}</div></div>`;
+  const sameView = previousView === view;
+  const sensorDraft = sameView && view === "device"
+    ? Array.from(main.querySelectorAll("#sensor input, #sensor select"), field => [field.id, field.value])
+    : [];
+
+  if (view !== "login" || !sameView) {
+    main.innerHTML = viewMarkup(view, model, {
+      call, pending, outcome: outcomes[model.result] || outcomes.server_restarted,
+    });
+    for (const [id, value] of sensorDraft) {
+      document.getElementById(id).value = value;
+    }
+    if (!sameView) {
+      main.querySelector("h1")?.focus();
+    } else if (focused?.id) {
+      document.getElementById(focused.id)?.focus({ preventScroll: true });
+    } else if (focused?.dataset.action) {
+      const replacement = Array.from(main.querySelectorAll("button[data-action]")).find(button =>
+        button.dataset.action === focused.dataset.action && button.dataset.id === focused.dataset.id
+      );
+      replacement?.focus({ preventScroll: true });
+    }
   }
-  if (previousView !== view) main.querySelector("h1")?.focus();
-  else if (focusKey) [...main.querySelectorAll("button[data-action]")].find(
-    button => button.dataset.action === focusKey && button.dataset.id === focusId)?.focus();
   previousView = view;
   updateReadings();
   tick();
