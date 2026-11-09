@@ -177,6 +177,7 @@ class Coordinator:
                 raise ValueError("Invalid media signal.")
             if (signal["kind"] == "offer" and role != "vest") or (signal["kind"] == "answer" and role != "helper"):
                 raise ValueError("Invalid signaling direction.")
+            json.dumps(signal, allow_nan=False)
             other = request["helper"] if role == "vest" else request["vest"]
             if other in self.peers:
                 self.peers[other].send({"type": "signal", "id": request_id, "signal": signal})
@@ -357,7 +358,7 @@ async def events(websocket: WebSocket):
             try:
                 while coordinator.peers.get(peer.id) is peer:
                     raw = await websocket.receive_text()
-                    if len(raw) > 65536:
+                    if coordinator.peers.get(peer.id) is not peer or len(raw) > 65536:
                         break
                     try:
                         coordinator.handle(peer, json.loads(raw))
