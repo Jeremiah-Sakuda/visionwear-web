@@ -18,6 +18,7 @@ const model = {
 let socket, reconnect, heartbeat, lastReply, call, pending, retry, streamWithVideo, streamWithAudio;
 let signaling = Promise.resolve();
 let previousView;
+let authPage = "login";
 
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => (
   { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]
@@ -40,6 +41,60 @@ const outcomes = {
   server_restarted: ["Connection interrupted", "The service restarted. Return to the dashboard to continue."],
   delivery_failed: ["Request delivery failed", "The server did not acknowledge the request within five seconds."],
 };
+
+const INACTIVITY_LIMIT = 10 * 1000;
+let lastActivity = Date.now();
+let inactivityTimer = null;
+let inactivityTimeoutPending = false;
+
+function stopInactivityTimer() {
+  clearTimeout(inactivityTimer);
+  inactivityTimer = null;
+}
+
+function handleInactivity() {
+  inactivityTimer = null;
+  // Only applies to logged-in volunteers who are available.
+  if (!model.identity || model.identity.role !== "helper") return;
+  if (!model.available || !model.online) return;
+  // Do not interrupt an ongoing assistance session.
+  if (inCall()) return;
+  // Verify that five minutes have actually passed.
+  const elapsed = Date.now() - lastActivity;
+  if (elapsed < INACTIVITY_LIMIT) {
+    inactivityTimer = setTimeout(handleInactivity, INACTIVITY_LIMIT - elapsed);
+    return;
+  }
+  // Automatically mark the volunteer unavailable.
+  if (inactivityTimeoutPending) return;
+  inactivityTimeoutPending = true;
+  send({ type: "availability", available: false });
+  model.notice =
+    "You've been marked Unavailable after 5 minutes of inactivity. " +
+    "Select Available when you're ready to assist again.";
+  render();
+}
+
+function resetInactivityTimer() {
+  lastActivity = Date.now();
+  stopInactivityTimer();
+  if (!model.identity || model.identity.role !== "helper") return;
+  if (!model.available || !model.online) return;
+  if (inCall()) return;
+  inactivityTimer = setTimeout(handleInactivity, INACTIVITY_LIMIT);
+}
+
+// Monitor user activity.
+["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach(eventName => {
+  document.addEventListener(eventName, resetInactivityTimer, { passive: true });
+});
+
+// Check inactivity when returning to the browser tab.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && model.identity?.role === "helper" && model.available && !inCall()) {
+    handleInactivity();
+  }
+});
 
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -73,12 +128,25 @@ function openSocket() {
     const event = JSON.parse(data);
     switch (event.type) {
       case "state": {
+        const wasAvailable = model.available;
+        const wasInCall = Boolean(inCall());
         model.online = true;
         model.available = event.available;
+        if (!model.available) {
+          inactivityTimeoutPending = false;
+        }
         const oldCount = model.waiting.length;
         const oldState = model.request?.state;
         model.waiting = event.waiting;
         model.request = event.request;
+        // Manage inactivity timeout based on volunteer status.
+        if (helper()) {
+          if (!model.available || inCall()) {
+            stopInactivityTimer();
+          } else if (!wasAvailable || wasInCall || !inactivityTimer) {
+            resetInactivityTimer();
+          }
+        }
         if (helper() && event.waiting.length > oldCount) announce("New help request.");
         if (oldState !== event.request?.state && event.request?.state === "audio_only") {
           announce("Video unavailable. Two-way audio is active.");
@@ -128,6 +196,7 @@ function openSocket() {
   peer.onclose = async ({ code }) => {
     if (socket !== peer) return;
     clearInterval(heartbeat);
+    stopInactivityTimer();
     const wasPaired = inCall();
     model.online = false;
     model.available = false;
@@ -206,15 +275,125 @@ function newRequest() {
 }
 
 function showLogin() {
-  main.innerHTML = `<div class="login"><header>${brand}</header><div class="center">
-    <form id="login">
-      <p class="kicker">Volunteer assistance</p><h1 tabindex="-1">Welcome, Helper</h1>
-      <p class="muted">Sign in with your assigned VisionWear account.</p>
-      <label>Email<input name="email" type="email" autocomplete="username" required maxlength="120"></label>
-      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
-      <p class="error" id="login-error" role="alert">${esc(model.notice)}</p>
-      <button class="primary" type="submit">Sign in</button>
-    </form></div></div>`;
+  main.innerHTML = `
+    <div class="login">
+      <header>${brand}</header>
+      <div class="center">
+        <form id="login">
+          <p class="kicker">Volunteer assistance</p>
+          <h1 tabindex="-1">Welcome, Helper</h1>
+          <p class="muted">
+            Sign in with your VisionWear account.
+          </p>
+          <label>
+            Email
+            <input
+              name="email"
+              type="email"
+              autocomplete="username"
+              required
+              maxlength="120"
+            >
+          </label>
+          <label>
+            Password
+            <input
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              maxlength="256"
+            >
+          </label>
+          <p class="error" id="login-error" role="alert">
+            ${esc(model.notice)}
+          </p>
+          <button class="primary" type="submit">
+            Sign In
+          </button>
+          <p class="auth-switch">
+            Don't have an account?
+            <button type="button" data-action="show-signup">
+              Create Account
+            </button>
+          </p>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function showSignup() {
+  main.innerHTML = `
+    <div class="login">
+      <header>${brand}</header>
+      <div class="center">
+        <form id="signup">
+          <p class="kicker">Volunteer registration</p>
+          <h1 tabindex="-1">Create Account</h1>
+          <p class="muted">
+            Registration is currently limited to
+            preapproved VisionWear volunteers.
+          </p>
+          <label>
+            Full Name
+            <input
+              name="name"
+              type="text"
+              autocomplete="name"
+              required
+              maxlength="100"
+            >
+          </label>
+          <label>
+            Email Address
+            <input
+              name="email"
+              type="email"
+              autocomplete="email"
+              required
+              maxlength="120"
+            >
+          </label>
+          <label>
+            Password
+            <input
+              name="password"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="256"
+              required
+            >
+          </label>
+          <label>
+            Confirm Password
+            <input
+              name="confirm_password"
+              type="password"
+              autocomplete="new-password"
+              minlength="12"
+              maxlength="256"
+              required
+            >
+          </label>
+          <p class="muted">
+            Passwords must contain at least 12 characters.
+          </p>
+          <p class="error" id="signup-error" role="alert"></p>
+          <button class="primary" type="submit">
+            Create Account
+          </button>
+          <p class="auth-switch">
+            Already have an account?
+            <button type="button" data-action="show-login">
+              Sign In
+            </button>
+          </p>
+        </form>
+      </div>
+    </div>
+  `;
 }
 
 function topbar(title, subtitle) {
@@ -323,10 +502,15 @@ function render() {
   const focused = document.activeElement;
   const focusKey = focused?.dataset.action;
   const focusId = focused?.dataset.id;
-  const view = !model.identity ? "login" : model.result ? "result" :
-    inCall() ? "session" : model.page === "settings" ? "settings" : helper() ? "dashboard" : "device";
-  if (view === "login") {
-    if (previousView !== view) showLogin();
+  const view = !model.identity ? authPage : model.result ? "result" :    inCall() ? "session" : model.page === "settings" ? "settings" : helper() ? "dashboard" : "device";
+  if (view === "login" || view === "signup") {
+    if (previousView !== view) {
+      if (view === "login") {
+        showLogin();
+      } else {
+        showSignup();
+      }
+    }
   } else {
     const isDashboard = ["dashboard", "device", "result"].includes(view);
     main.innerHTML = `<div class="shell"><aside class="sidebar">${brand}<nav aria-label="Main navigation">
@@ -405,6 +589,37 @@ main.addEventListener("submit", async event => {
     const distance = data.get("distance");
     send({ type: "sensor", sensor: data.get("sensor"), distance: distance === "" ? null : Number(distance) });
   }
+  if (form.id === "signup") {
+    const button = form.querySelector('button[type="submit"]');
+    const errorMessage = form.querySelector("#signup-error");
+    const registration = Object.fromEntries(data);
+    // Check whether passwords match.
+    if (registration.password !== registration.confirm_password) {
+      errorMessage.textContent = "Passwords do not match.";
+      return;
+    }
+    // Prevent multiple submissions.
+    button.disabled = true;
+    errorMessage.textContent = "";
+    try {
+      // Send registration information to FastAPI.
+      await api("/api/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(registration)
+      });
+      // Return to login after successful registration.
+      authPage = "login";
+      model.notice = "Account created successfully. Please sign in.";
+      render();
+    } catch (error) {
+      errorMessage.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  }
   if (form.id === "login") {
     const button = form.querySelector("button");
     button.disabled = true;
@@ -435,8 +650,19 @@ main.addEventListener("click", async event => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   switch (button.dataset.action) {
+    case "show-signup":
+      authPage = "signup";
+      model.notice = "";
+      render();
+      break;
+    case "show-login":
+      authPage = "login";
+      model.notice = "";
+      render();
+      break;
     case "availability":
       model.notice = "";
+      inactivityTimeoutPending = false;
       send({ type: "availability", available: !model.available });
       break;
     case "accept":
@@ -488,6 +714,7 @@ main.addEventListener("click", async event => {
     case "logout":
       try {
         await api("/api/logout", { method: "POST" });
+        stopInactivityTimer();
         clearTimeout(reconnect);
         clearInterval(heartbeat);
         clearPending();

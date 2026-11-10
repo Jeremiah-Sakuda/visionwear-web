@@ -20,6 +20,23 @@ from .store import PAIRED, Store
 STATIC = Path(__file__).with_name("static")
 COOKIE = "visionwear_session"
 
+AUTHORIZED_EMAILS_FILE = Path("authorized_emails.txt")
+
+def is_authorized_email(email):
+    email = email.strip().lower()
+
+    if not AUTHORIZED_EMAILS_FILE.is_file():
+        return False
+
+    with AUTHORIZED_EMAILS_FILE.open() as file:
+        authorized_emails = {
+            line.strip().lower()
+            for line in file
+            if line.strip()
+        }
+
+    return email in authorized_emails
+
 
 def classify(distance):
     if type(distance) not in (int, float) or not math.isfinite(distance) or distance <= 0:
@@ -270,6 +287,56 @@ class Login(BaseModel):
     email: str = Field(min_length=1, max_length=120)
     password: str = Field(min_length=1, max_length=256)
 
+class Register(BaseModel):
+    email: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=12, max_length=256)
+    confirm_password: str = Field(min_length=1, max_length=256)
+
+@app.post("/api/register", status_code=201)
+async def register(request: Request, payload: Register):
+    # Ensure the request comes from the expected website.
+    if not same_origin(request.headers):
+        raise HTTPException(403, "Origin denied.")
+    # Normalize the email address.
+    email = payload.email.strip().lower()
+    # Check whether the email is approved.
+    if not is_authorized_email(email):
+        raise HTTPException(
+            403,
+            "This email address is not approved for registration. Please contact the VisionWear team to request access."
+        )
+    # Ensure both passwords match.
+    if payload.password != payload.confirm_password:
+        raise HTTPException(
+            400,
+            "Passwords do not match."
+        )
+    # Validate the display name.
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(
+            400,
+            "Please enter your name."
+        )
+    # Access the existing database.
+    store = request.app.state.coordinator.store
+    # Create the volunteer account.
+    try:
+        store.add_account(
+            email,
+            "helper",
+            name,
+            payload.password
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            409,
+            "An account with this email address already exists. Please sign in instead."
+        )
+    return {
+        "message": "Account created successfully. Please sign in."
+    }
 
 @app.post("/api/login")
 async def login(request: Request, payload: Login, response: Response):

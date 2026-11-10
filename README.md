@@ -9,7 +9,6 @@ Use Python 3.12. In the repository root, run:
 ```sh
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m app.accounts helper helper@example.test "Demo Helper"
 .venv/bin/python -m app.accounts vest vest@example.test VW-001
 .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
