@@ -78,3 +78,38 @@ form .primary{margin-top:20px;width:100%}
 [hidden]{display:none!important}
 @media(max-width:880px){.shell{grid-template-columns:168px minmax(0,1fr)}.media-layout{grid-template-columns:1fr}.media-layout aside{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:610px){.shell{display:block}.sidebar{padding:12px 14px}.sidebar .brand{margin:0 0 5px}.sidebar nav{display:flex;flex-wrap:wrap}.request{flex-wrap:wrap}.device-grid,.media-layout aside{grid-template-columns:1fr}.content{padding-top:18px}}
+
+/* Volunteer authentication navigation */
+.auth-switch {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.auth-switch button {
+  background: transparent;
+  border: none;
+  color: var(--blue);
+  padding: 4px;
+  font-weight: 650;
+  text-decoration: underline;
+}
+
+.auth-switch button:hover {
+  color: #0b408f;
+}
+
+/* Registration form */
+
+#signup {
+  max-width: 440px;
+}
+
+#signup .muted {
+  margin-top: 8px;
+}
+
+#signup label {
+  margin-top: 14px;
+}
